@@ -4,7 +4,6 @@ const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField, SlashComma
 const { REST } = require('@discordjs/rest');
 const Parser = require('rss-parser');
 const parser = new Parser();
-const axios = require('axios'); // Pour récupérer JSON/infos des patch notes et événements
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
 
@@ -16,19 +15,19 @@ const LAST_POST_FILE = './lastPosted.json';
 let lastPosted = {};
 if (fs.existsSync(LAST_POST_FILE)) lastPosted = JSON.parse(fs.readFileSync(LAST_POST_FILE, 'utf-8'));
 
-// Feeds Brawl Stars
+// Feeds Brawl Stars officiels
 const FEEDS = [
     { name: 'Brawl Talks', url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCooVYzDxdwTtGYAkcPmOgOw' },
-    // Ici, tu peux ajouter d'autres feeds officiels ou JSON si dispo pour events/rewards
+    // Ajoute ici d’autres feeds officiels pour patch notes, événements, récompenses gratuites
 ];
 
 // Sauvegarde config et lastPosted
 function saveConfig() { fs.writeFileSync(CONFIG_FILE, JSON.stringify(guildConfig, null, 4)); }
 function saveLastPosted() { fs.writeFileSync(LAST_POST_FILE, JSON.stringify(lastPosted, null, 4)); }
 
-// Résumé patch notes
+// Résumé patch notes / fallback description
 function getPatchSummary(content) {
-    if (!content) return '';
+    if (!content || content.trim() === '') return 'Pas de description disponible.';
     const lines = content.split("\n").map(l => l.trim()).filter(Boolean);
     const bullets = lines.filter(line => line.startsWith('-') || line.match(/buff|nerf|new|skin|gadget|change|reward|event/i));
     if (bullets.length > 0) return bullets.slice(0, 10).join("\n");
@@ -95,7 +94,7 @@ client.once('ready', () => {
     console.log(`Connecté en tant que ${client.user.tag}`);
     client.guilds.cache.forEach(guild => deployCommands(guild.id));
     checkAllNews();
-    setInterval(checkAllNews, 10 * 60 * 1000);
+    setInterval(checkAllNews, 10 * 60 * 1000); // toutes les 10 minutes
 });
 
 // Auto deploy pour nouveau serveur
@@ -139,6 +138,7 @@ client.on('interactionCreate', async interaction => {
 
             if (embedList.length === 0) return interaction.reply({ content: 'Pas de news récentes trouvées.', ephemeral: true });
             interaction.reply({ embeds: embedList.slice(0, 5) }); // top 5
+
         } catch (err) {
             console.error(err);
             interaction.reply({ content: 'Erreur lors de la récupération des news.', ephemeral: true });

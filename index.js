@@ -1,7 +1,9 @@
 const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, PermissionsBitField, EmbedBuilder } = require('discord.js');
 const fetch = require('node-fetch');
 
+require('dotenv').config();
 const TOKEN = process.env.TOKEN;
+
 const CLIENT_ID = "1411692797978738849";
 
 let newsChannelId = null;

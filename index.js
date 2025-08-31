@@ -1,100 +1,107 @@
 require('dotenv').config();
+const fs = require('fs');
 const { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField, SlashCommandBuilder, Routes } = require('discord.js');
 const { REST } = require('@discordjs/rest');
 const Parser = require('rss-parser');
 const parser = new Parser();
+const axios = require('axios'); // Pour récupérer JSON/infos des patch notes et événements
 
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages
-    ]
-});
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
 
-// ID de la chaîne YouTube officielle Brawl Stars
-const YT_CHANNEL_ID = "UCooVYzDxdwTtGYAkcPmOgOw";
-const FEED_URL = `https://www.youtube.com/feeds/videos.xml?channel_id=${YT_CHANNEL_ID}`;
+const CONFIG_FILE = './config.json';
+let guildConfig = {};
+if (fs.existsSync(CONFIG_FILE)) guildConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
 
-let lastPosted = null;
+const LAST_POST_FILE = './lastPosted.json';
+let lastPosted = {};
+if (fs.existsSync(LAST_POST_FILE)) lastPosted = JSON.parse(fs.readFileSync(LAST_POST_FILE, 'utf-8'));
 
-// Stockage simple par serveur
-const guildConfig = {}; // { guildId: { newsChannelId, lastPostedGuid } }
+// Feeds Brawl Stars
+const FEEDS = [
+    { name: 'Brawl Talks', url: 'https://www.youtube.com/feeds/videos.xml?channel_id=UCooVYzDxdwTtGYAkcPmOgOw' },
+    // Ici, tu peux ajouter d'autres feeds officiels ou JSON si dispo pour events/rewards
+];
 
-// Fonction pour extraire un résumé des patch notes
+// Sauvegarde config et lastPosted
+function saveConfig() { fs.writeFileSync(CONFIG_FILE, JSON.stringify(guildConfig, null, 4)); }
+function saveLastPosted() { fs.writeFileSync(LAST_POST_FILE, JSON.stringify(lastPosted, null, 4)); }
+
+// Résumé patch notes
 function getPatchSummary(content) {
     if (!content) return '';
     const lines = content.split("\n").map(l => l.trim()).filter(Boolean);
-    const bullets = lines.filter(line => line.startsWith('-') || line.match(/buff|nerf|new|skin|gadget|change/i));
+    const bullets = lines.filter(line => line.startsWith('-') || line.match(/buff|nerf|new|skin|gadget|change|reward|event/i));
     if (bullets.length > 0) return bullets.slice(0, 10).join("\n");
     return content.length > 300 ? content.slice(0, 300) + "…" : content;
 }
 
-// Vérifie et poste les dernières vidéos
-async function checkBrawlTalks() {
-    try {
-        const feed = await parser.parseURL(FEED_URL);
-        if (!feed.items || feed.items.length === 0) return;
+// Vérifie tous les feeds et poste les nouvelles news
+async function checkAllNews() {
+    for (const feed of FEEDS) {
+        try {
+            const parsed = await parser.parseURL(feed.url);
+            if (!parsed.items) continue;
 
-        const latest = feed.items[0];
-        if (lastPosted && latest.guid === lastPosted) return;
-        lastPosted = latest.guid;
+            for (const item of parsed.items) {
+                const key = `${feed.name}-${item.guid}`;
+                if (lastPosted[key]) continue;
 
-        const description = getPatchSummary(latest.content || latest.contentSnippet);
-        const embed = new EmbedBuilder()
-            .setTitle(latest.title)
-            .setURL(latest.link)
-            .setDescription(description)
-            .setTimestamp(new Date(latest.pubDate || Date.now()))
-            .setColor(0xff0000)
-            .setFooter({ text: 'BrawlStars News' });
+                const embed = new EmbedBuilder()
+                    .setTitle(`${feed.name}: ${item.title}`)
+                    .setURL(item.link)
+                    .setDescription(getPatchSummary(item.content || item.contentSnippet))
+                    .setTimestamp(new Date(item.pubDate || Date.now()))
+                    .setColor(0xff0000)
+                    .setFooter({ text: 'BrawlStars News' });
 
-        client.guilds.cache.forEach(guild => {
-            const config = guildConfig[guild.id];
-            if (!config || !config.newsChannelId) return;
+                client.guilds.cache.forEach(guild => {
+                    const config = guildConfig[guild.id];
+                    if (!config || !config.newsChannelId) return;
 
-            const channel = guild.channels.cache.get(config.newsChannelId);
-            if (channel && channel.isTextBased()) {
-                channel.send({ embeds: [embed] }).catch(console.error);
+                    const channel = guild.channels.cache.get(config.newsChannelId);
+                    if (channel && channel.isTextBased()) channel.send({ embeds: [embed] }).catch(console.error);
+                });
+
+                lastPosted[key] = true;
             }
-        });
-
-    } catch (err) {
-        console.error("Erreur récupération Brawl Talks:", err);
+        } catch (err) {
+            console.error(`Erreur récupération feed ${feed.name}:`, err);
+        }
     }
+    saveLastPosted();
 }
 
-// Commandes slash
+// Slash commands
 const commands = [
     new SlashCommandBuilder()
         .setName('admin-newschannel')
         .setDescription('Définir le salon où le bot poste les news')
-        .addChannelOption(option =>
-            option.setName('channel')
-                .setDescription('Salon pour les news')
-                .setRequired(true)),
+        .addChannelOption(option => option.setName('channel').setDescription('Salon pour les news').setRequired(true)),
     new SlashCommandBuilder()
         .setName('latest-news')
-        .setDescription('Afficher les dernières news de la semaine')
+        .setDescription('Afficher les dernières news')
 ].map(cmd => cmd.toJSON());
 
-// Déploiement slash commands
-client.once('ready', async () => {
-    console.log(`Connecté en tant que ${client.user.tag}`);
-
+// Déploiement guild-specific
+async function deployCommands(guildId) {
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
     try {
-        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('Slash commands deployées !');
-    } catch (err) {
-        console.error(err);
-    }
+        await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), { body: commands });
+        console.log(`Slash commands deployées sur le serveur ${guildId}`);
+    } catch (err) { console.error(err); }
+}
 
-    // Lancer le check des news toutes les 10 min
-    checkBrawlTalks();
-    setInterval(checkBrawlTalks, 10 * 60 * 1000);
+client.once('ready', () => {
+    console.log(`Connecté en tant que ${client.user.tag}`);
+    client.guilds.cache.forEach(guild => deployCommands(guild.id));
+    checkAllNews();
+    setInterval(checkAllNews, 10 * 60 * 1000);
 });
 
-// Interaction slash commands
+// Auto deploy pour nouveau serveur
+client.on('guildCreate', guild => { deployCommands(guild.id); });
+
+// Interaction
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
@@ -109,36 +116,29 @@ client.on('interactionCreate', async interaction => {
 
         guildConfig[interaction.guildId] = guildConfig[interaction.guildId] || {};
         guildConfig[interaction.guildId].newsChannelId = channel.id;
+        saveConfig();
+
         interaction.reply({ content: `Salon des news défini sur <#${channel.id}>`, ephemeral: false });
 
     } else if (commandName === 'latest-news') {
         try {
-            const feed = await parser.parseURL(FEED_URL);
-            if (!feed.items || feed.items.length === 0) return interaction.reply({ content: 'Pas de news disponibles.', ephemeral: true });
-
-            const now = new Date();
-            const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-
-            let items = feed.items.filter(item => new Date(item.pubDate) > oneWeekAgo);
-            if (items.length === 0) { // fallback semaine précédente
-                const twoWeeksAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
-                items = feed.items.filter(item => new Date(item.pubDate) > twoWeeksAgo);
+            const embedList = [];
+            for (const feed of FEEDS) {
+                const parsed = await parser.parseURL(feed.url);
+                if (!parsed.items) continue;
+                parsed.items.slice(0, 5).forEach(item => {
+                    embedList.push(new EmbedBuilder()
+                        .setTitle(`${feed.name}: ${item.title}`)
+                        .setURL(item.link)
+                        .setDescription(getPatchSummary(item.content || item.contentSnippet))
+                        .setTimestamp(new Date(item.pubDate || Date.now()))
+                        .setColor(0xff0000)
+                        .setFooter({ text: 'BrawlStars News' }));
+                });
             }
 
-            if (items.length === 0) return interaction.reply({ content: 'Pas de news récentes trouvées.', ephemeral: true });
-
-            const latest = items[0];
-            const description = getPatchSummary(latest.content || latest.contentSnippet);
-            const embed = new EmbedBuilder()
-                .setTitle(latest.title)
-                .setURL(latest.link)
-                .setDescription(description)
-                .setTimestamp(new Date(latest.pubDate || Date.now()))
-                .setColor(0xff0000)
-                .setFooter({ text: 'BrawlStars News' });
-
-            interaction.reply({ embeds: [embed] });
-
+            if (embedList.length === 0) return interaction.reply({ content: 'Pas de news récentes trouvées.', ephemeral: true });
+            interaction.reply({ embeds: embedList.slice(0, 5) }); // top 5
         } catch (err) {
             console.error(err);
             interaction.reply({ content: 'Erreur lors de la récupération des news.', ephemeral: true });

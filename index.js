@@ -11,8 +11,8 @@ const client = new Client({
     ]
 });
 
-// Config YouTube / Brawl Stars
-const YT_CHANNEL_ID = "UC0O1Y0oZzESlV8bW2dh7nUw";
+// ID de la chaîne YouTube officielle Brawl Stars
+const YT_CHANNEL_ID = "UCooVYzDxdwTtGYAkcPmOgOw";
 const FEED_URL = `https://www.youtube.com/feeds/videos.xml?channel_id=${YT_CHANNEL_ID}`;
 
 let lastPosted = null;

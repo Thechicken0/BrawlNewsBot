@@ -1,13 +1,29 @@
 const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, PermissionsBitField, EmbedBuilder } = require('discord.js');
 const fetch = require('node-fetch');
+const fs = require('fs');
 
 require('dotenv').config();
 const TOKEN = process.env.TOKEN;
-
 const CLIENT_ID = "1411692797978738849";
 
+// -------- CONFIG --------
 let newsChannelId = null;
+const configFile = 'config.json';
 
+function saveConfig() {
+  fs.writeFileSync(configFile, JSON.stringify({ newsChannelId }));
+}
+
+function loadConfig() {
+  if (fs.existsSync(configFile)) {
+    const data = JSON.parse(fs.readFileSync(configFile));
+    newsChannelId = data.newsChannelId || null;
+  }
+}
+
+loadConfig();
+
+// -------- CLIENT --------
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
   partials: [Partials.Channel]
@@ -49,7 +65,10 @@ async function fetchYouTubeNews() {
       results.push({ title: match[1], url: match[2], date: new Date(match[3]) });
     }
     return results;
-  } catch { return []; }
+  } catch (err) {
+    console.error("Erreur fetchYouTubeNews:", err);
+    return [];
+  }
 }
 
 async function fetchBlogNews() {
@@ -63,7 +82,10 @@ async function fetchBlogNews() {
       results.push({ title: match[1], url: match[2], date: new Date(match[3]) });
     }
     return results;
-  } catch { return []; }
+  } catch (err) {
+    console.error("Erreur fetchBlogNews:", err);
+    return [];
+  }
 }
 
 async function fetchBrawlifyNews() {
@@ -71,7 +93,10 @@ async function fetchBrawlifyNews() {
     const res = await fetch("https://api.brawlapi.com/v1/blog");
     const json = await res.json();
     return json.map(item => ({ title: item.title, url: item.link, date: new Date(item.date) }));
-  } catch { return []; }
+  } catch (err) {
+    console.error("Erreur fetchBrawlifyNews:", err);
+    return [];
+  }
 }
 
 async function getAllNews(limit = 5) {
@@ -92,18 +117,30 @@ async function getAllNews(limit = 5) {
 async function sendNews(channel) {
   const news = await getAllNews(5);
   if (!news.length) return channel.send("Aucune news trouvée pour le moment !");
-  for (const item of news) {
-    const embed = new EmbedBuilder()
-      .setTitle(item.title)
-      .setURL(item.url)
-      .setDescription(`Publié le ${item.date.toLocaleDateString()}`)
-      .setColor(0xFFD700);
-    await channel.send({ embeds: [embed] });
-  }
+  
+  const embed = new EmbedBuilder()
+    .setTitle("Dernières news Brawl Stars")
+    .setColor(0xFFD700)
+    .setDescription(news.map(n => `[${n.title}](${n.url}) - ${n.date.toLocaleDateString()}`).join("\n"));
+  
+  await channel.send({ embeds: [embed] });
 }
 
 // -------- READY --------
-client.once('ready', () => console.log(`Connecté en tant que ${client.user.tag}`));
+client.once('ready', () => {
+  console.log(`Connecté en tant que ${client.user.tag}`);
+
+  // Envoi automatique toutes les heures
+  setInterval(async () => {
+    if (!newsChannelId) return;
+    try {
+      const channel = await client.channels.fetch(newsChannelId);
+      await sendNews(channel);
+    } catch (err) {
+      console.error("Erreur envoi automatique:", err);
+    }
+  }, 60 * 60 * 1000); // toutes les heures
+});
 
 // -------- INTERACTIONS --------
 client.on('interactionCreate', async (interaction) => {
@@ -118,6 +155,7 @@ client.on('interactionCreate', async (interaction) => {
       }
       const channel = interaction.options.getChannel('salon');
       newsChannelId = channel.id;
+      saveConfig();
       return interaction.reply(`Le salon des news est maintenant <#${newsChannelId}>`);
     }
 
